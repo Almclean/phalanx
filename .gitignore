@@ -28,3 +28,9 @@ Thumbs.db
 
 # Windows ADS artifacts from copied files
 *:Zone.Identifier
+
+# Local generated summaries/artifacts
+*_summary.md
+*_summary.docx
+*_full.json
+*_diff.json

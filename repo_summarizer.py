@@ -31,7 +31,7 @@ Environment:
     ANTHROPIC_API_KEY  — required (or pass --api-key)
     GITHUB_TOKEN       — optional, used for private repos (or pass --github-token)
 
-Supported languages: Python, TypeScript/JavaScript, Rust, Go
+Supported languages: Python, TypeScript/JavaScript, Rust, Go, C, C++
 """
 
 from __future__ import annotations

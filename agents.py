@@ -5,7 +5,7 @@ Design:
 - L1 agents (function/class level): use claude-haiku-4-5 — cheap, fast, parallelized heavily
 - L2 agents (file level): use claude-haiku-4-5 — still cheap, moderate context
 - L3/L4 agents (dir/module level): use claude-sonnet-4-6 — needs more synthesis ability
-- L5 agent (final synthesizer): use claude-sonnet-4-6 — the money shot
+- L5 agent (final synthesizer): use claude-sonnet-4-6 — highest-context synthesis
 
 Rate limiting uses tiered semaphores:
 - Haiku: higher concurrency

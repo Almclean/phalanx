@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "Recursive hierarchical codebase summarizer powered by LLM agents"
 readme = "README.md"
 requires-python = ">=3.10"
+authors = [{ name = "Alistair McLean" }]
+license = { file = "LICENSE" }
+keywords = ["llm", "codebase", "summarization", "tree-sitter", "developer-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Documentation",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "anthropic",
   "tree-sitter",
@@ -18,6 +31,11 @@ dependencies = [
   "tree-sitter-c",
   "tree-sitter-cpp",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Almclean/phalanx"
+Repository = "https://github.com/Almclean/phalanx"
+Issues = "https://github.com/Almclean/phalanx/issues"
 
 [project.scripts]
 phalanx = "repo_summarizer:run_cli"
