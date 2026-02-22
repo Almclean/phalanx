@@ -655,3 +655,11 @@ class Summarizer:
             max_tokens=2000,
             layer="l5",
         )
+
+    async def summarize_diff_digest(self, prompt: str) -> str:
+        return await self._call(
+            prompt,
+            model=SONNET,
+            max_tokens=900,
+            layer="diff_digest",
+        )

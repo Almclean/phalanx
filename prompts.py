@@ -7,6 +7,7 @@ progressively higher-level questions.
 
 from __future__ import annotations
 from typing import Optional
+from manifest import ManifestDiff
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +353,65 @@ modules. Do not fetch every module by default.
 When you have enough context, produce a ~1,200 word summary with sections:
 Overview, Architecture, Core Components, Data Flow & Key Interactions,
 Technical Patterns & Design Decisions, Developer Notes."""
+
+
+# ---------------------------------------------------------------------------
+# Diff digest prompt
+# ---------------------------------------------------------------------------
+
+def diff_digest_prompt(
+    *,
+    old_run_id: str | None,
+    new_run_id: str,
+    old_summary: str | None,
+    new_summary: str,
+    diff: ManifestDiff,
+) -> str:
+    modified_block = "\n".join(
+        f"- `{m.path}` ({m.language}): unit_delta={m.unit_count_delta}\n"
+        f"  old: {m.old_summary}\n"
+        f"  new: {m.new_summary}"
+        for m in diff.modified[:100]
+    ) or "- [none]"
+    added_block = "\n".join(f"- `{p}`" for p in diff.added[:100]) or "- [none]"
+    deleted_block = "\n".join(f"- `{p}`" for p in diff.deleted[:100]) or "- [none]"
+    churn_block = "\n".join(f"- `{p}`" for p in diff.churn_hotspots[:50]) or "- [none]"
+
+    old_summary_block = old_summary[:2000] if old_summary else "[unavailable]"
+    new_summary_block = new_summary[:2000] if new_summary else "[unavailable]"
+
+    return f"""You are writing an engineering change digest for a technical manager.
+
+Previous run: {old_run_id or "none"}
+Current run: {new_run_id}
+
+Added files:
+{added_block}
+
+Deleted files:
+{deleted_block}
+
+Modified files:
+{modified_block}
+
+Churn hotspots:
+{churn_block}
+
+Previous repository summary excerpt:
+{old_summary_block}
+
+Current repository summary excerpt:
+{new_summary_block}
+
+Write a 400-600 word digest with sections:
+1) Engineering Pulse
+2) What Shipped
+3) What Was Removed (only if any deleted files)
+4) Complexity Signals
+5) Architecture Notes
+6) By The Numbers
+
+Use subsystem-level language. Avoid line-level implementation detail."""
 
 
 # ---------------------------------------------------------------------------

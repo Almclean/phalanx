@@ -30,8 +30,17 @@ This keeps context clean and avoids context rot at higher levels.
 | JavaScript | `.js`, `.mjs`, `.cjs` | `tree-sitter-typescript` |
 | Rust | `.rs` | `tree-sitter-rust` |
 | Go | `.go` | `tree-sitter-go` |
+| C | `.c`, `.h` | `tree-sitter-c` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp` | `tree-sitter-cpp` |
 
-C/C++ support: install `tree-sitter-c` and `tree-sitter-cpp`, then add to `_EXT_MAP` in `parser.py`.
+## v2 Highlights
+
+- Deep mode for large repos (chunked L3 + clustered L4)
+- Resumable runs with persistent checkpoints
+- Tiered model concurrency (Haiku/Sonnet)
+- L1 batching for small units to reduce API calls
+- L5 tool-use synthesis loop
+- Run manifests + JSON diff + optional prose digest
 
 ## Installation (uv)
 
@@ -63,6 +72,21 @@ uv run phalanx /path/to/your/repo --exclude-dir migrations --exclude-dir fixture
 
 # Tune concurrency (default 20, increase for large repos)
 uv run phalanx /path/to/your/repo --max-concurrent 40
+
+# Deep mode controls
+uv run phalanx /path/to/your/repo --deep-mode-threshold 500 --l3-chunk-size 15 --l4-cluster-size 8
+
+# Dry-run cost estimate (no API calls)
+uv run phalanx /path/to/your/repo --dry-run --summary-only
+
+# Resume controls
+uv run phalanx /path/to/your/repo --checkpoint-dir ~/.repo_summarizer_cache/checkpoints --no-resume
+
+# Diff output (manifest-based)
+uv run phalanx /path/to/your/repo --diff --diff-output run_diff.json
+
+# Diff-only output mode
+uv run phalanx /path/to/your/repo --diff-only --diff-digest
 ```
 
 ## Cost Estimates
@@ -90,35 +114,12 @@ The tool generates:
 3. **File summaries**: One per source file
 4. **Stats**: Token counts, API calls, cache hits, estimated cost
 
-## Extending to C/C++
+## Diff Workflow
 
-```bash
-uv add tree-sitter-c tree-sitter-cpp
-```
-
-Then in `parser.py`:
-```python
-import tree_sitter_c as tsc
-import tree_sitter_cpp as tscpp
-
-_LANGUAGES["c"] = Language(tsc.language())
-_LANGUAGES["cpp"] = Language(tscpp.language())
-
-_EXT_MAP.update({
-    ".c": "c",
-    ".h": "c",
-    ".cpp": "cpp",
-    ".cc": "cpp",
-    ".cxx": "cpp",
-    ".hpp": "cpp",
-})
-
-_TOP_LEVEL_NODES["c"] = {"function_definition", "struct_specifier", "enum_specifier"}
-_TOP_LEVEL_NODES["cpp"] = {
-    "function_definition", "class_specifier", "struct_specifier",
-    "enum_specifier", "namespace_definition", "template_declaration",
-}
-```
+- Every non-dry run writes a manifest to `~/.repo_summarizer_cache/manifests` (or `--manifest-dir`).
+- On subsequent runs, `--diff` compares current manifest to the previous run (or `--since <run_id_prefix>`).
+- Diff JSON includes added/deleted/modified/unchanged counts and churn hotspots.
+- `--diff-digest` adds a manager-oriented prose digest from the diff context.
 
 ## Files
 
@@ -130,6 +131,10 @@ repo_summarizer/
 ├── agents.py            # Async LLM callers (one per layer)
 ├── prompts.py           # Layer-specific prompts
 ├── parser.py            # AST extraction (tree-sitter)
+├── checkpoint.py        # Resumable run checkpoints
+├── manifest.py          # Run manifest + diff helpers
+├── diff_report.py       # Diff JSON + digest generation
 ├── cache.py             # Content-addressed summary cache
+├── tests/               # Unit tests
 └── README.md
 ```

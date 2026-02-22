@@ -29,6 +29,8 @@ py-modules = [
   "agents",
   "parser",
   "checkpoint",
+  "manifest",
+  "diff_report",
   "cache",
   "github",
   "prompts",

@@ -47,6 +47,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from github import is_github_url, clone_repo, CloneError
 from orchestrator import RepoOrchestrator
+from manifest import ManifestStore, build_run_manifest, new_run_id
+from diff_report import manifest_diff_to_dict, write_diff_json, generate_diff_digest
 
 
 def build_markdown_report(result) -> str:
@@ -169,6 +171,22 @@ async def main():
                         help="Additional directory names to exclude (repeatable)")
     parser.add_argument("--summary-only", action="store_true",
                         help="Print only the final ~1200 word summary")
+    parser.add_argument("--diff", dest="diff", action="store_true", default=True,
+                        help="Generate diff report against previous manifest (default: on)")
+    parser.add_argument("--no-diff", dest="diff", action="store_false",
+                        help="Disable diff report generation")
+    parser.add_argument("--diff-output", type=Path, default=None,
+                        help="Path for JSON diff output (default: <output>_diff.json)")
+    parser.add_argument("--diff-digest", dest="diff_digest", action="store_true", default=True,
+                        help="Generate prose digest for the diff (default: on)")
+    parser.add_argument("--no-diff-digest", dest="diff_digest", action="store_false",
+                        help="Disable prose digest generation")
+    parser.add_argument("--diff-only", action="store_true",
+                        help="Output only diff report content (still runs analysis)")
+    parser.add_argument("--since", default=None,
+                        help="Diff against a specific prior run_id prefix")
+    parser.add_argument("--manifest-dir", type=Path, default=None,
+                        help="Manifest directory for run history and diffing")
 
     args = parser.parse_args()
 
@@ -194,8 +212,10 @@ async def main():
     # -----------------------------------------------------------------------
     tmp_dir = None
     target = args.target
+    repo_url: str | None = None
 
     if is_github_url(target):
+        repo_url = target
         ref_desc = f" @ {args.branch or args.ref or 'HEAD'}"
         print(f"\n🔗 Cloning {target}{ref_desc}...", flush=True)
         try:
@@ -243,20 +263,78 @@ async def main():
     try:
         result = await orchestrator.run(repo_path)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        # Always clean up temp clone dir
         if tmp_dir is not None:
             tmp_dir.cleanup()
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     elapsed = time.time() - start
     print(f"\n✅ Complete in {elapsed:.1f}s\n", flush=True)
 
-    if args.dry_run or args.summary_only:
+    diff_payload = None
+    diff_digest_text = None
+    diff_output_path = None
+
+    if args.diff and not args.dry_run:
+        manifest_store = ManifestStore(args.manifest_dir)
+        previous_manifest = manifest_store.find_latest(repo_path, run_id_prefix=args.since)
+
+        current_manifest = build_run_manifest(
+            repo_path=repo_path,
+            repo_url=repo_url,
+            run_id=new_run_id(repo_path),
+            duration_secs=elapsed,
+            api_cost_usd=orchestrator.summarizer.tracker.estimate_usd(),
+            final_summary=result.final_summary,
+            file_summaries=result.file_summaries,
+        )
+        manifest_path = manifest_store.save(current_manifest)
+        if args.verbose:
+            print(f"🗂️  Manifest written to: {manifest_path}")
+
+        if previous_manifest is not None:
+            diff_obj = manifest_store.diff(previous_manifest, current_manifest)
+            history = manifest_store.find_all(repo_path, limit=5)
+            diff_obj.churn_hotspots = manifest_store.compute_churn_hotspots(history)
+
+            diff_payload = manifest_diff_to_dict(
+                diff_obj,
+                old_run_id=previous_manifest.run_id,
+                new_run_id=current_manifest.run_id,
+            )
+
+            if args.diff_output is not None:
+                diff_output_path = args.diff_output
+            elif args.output is not None:
+                diff_output_path = args.output.with_name(f"{args.output.stem}_diff.json")
+            else:
+                diff_output_path = Path(f"{repo_path.resolve().name}_diff.json")
+            write_diff_json(diff_output_path, diff_payload)
+            print(f"📎 Diff JSON written to: {diff_output_path}")
+
+            if args.diff_digest:
+                diff_digest_text = await generate_diff_digest(
+                    summarizer=orchestrator.summarizer,
+                    diff=diff_obj,
+                    old_manifest=previous_manifest,
+                    new_manifest=current_manifest,
+                )
+        elif args.verbose:
+            print("ℹ️  No previous manifest found; skipping diff generation.")
+
+    if args.diff_only:
+        if diff_digest_text:
+            output_text = diff_digest_text
+        elif diff_payload:
+            output_text = json.dumps(diff_payload, indent=2)
+        else:
+            output_text = "No diff available for this run."
+    elif args.dry_run or args.summary_only:
         output_text = result.final_summary
     else:
         output_text = build_markdown_report(result)
+        if diff_digest_text:
+            output_text += "\n\n---\n\n## Diff Digest\n\n" + diff_digest_text
 
     if args.output:
         args.output.write_text(output_text)
@@ -274,11 +352,17 @@ async def main():
             "directory_summaries": result.directory_summaries,
             "file_summaries": result.file_summaries,
             "stats": result.stats,
+            "diff": diff_payload,
+            "diff_digest": diff_digest_text,
         }
         args.json_output.write_text(json.dumps(json_data, indent=2))
         print(f"📊 JSON report written to: {args.json_output}")
 
     print(f"\n💰 {orchestrator.summarizer.tracker.report()}")
+
+    # Always clean up temp clone dir after all post-processing that needs repo files.
+    if tmp_dir is not None:
+        tmp_dir.cleanup()
 
 
 def run_cli() -> None:

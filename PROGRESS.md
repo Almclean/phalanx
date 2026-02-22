@@ -18,7 +18,11 @@
 
 ## Remaining PRD Items
 - [x] Implement L5 tool-use agent loop (`list_modules`, `get_module_summary`, `get_file_summary`)
-- [ ] Add run manifest support (`manifest.py`) with churn tracking helpers
-- [ ] Add diff report generation (`diff_report.py`) and digest prompt flow
-- [ ] Add CLI diff flags (`--diff`, `--diff-only`, `--diff-output`, `--diff-digest`, `--since`, `--manifest-dir`)
-- [ ] Update README for v2 flags and deep-mode behavior
+- [x] Add run manifest support (`manifest.py`) with churn tracking helpers
+- [x] Add diff report generation (`diff_report.py`) and digest prompt flow
+- [x] Add CLI diff flags (`--diff`, `--diff-only`, `--diff-output`, `--diff-digest`, `--since`, `--manifest-dir`)
+- [x] Update README for v2 flags and deep-mode behavior
+
+## Follow-up Optimizations
+- [ ] Implement true `--diff-only` fast path (summarize changed files only)
+- [ ] Add manifest retention policy / pruning options
