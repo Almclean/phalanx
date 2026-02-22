@@ -24,5 +24,5 @@
 - [x] Update README for v2 flags and deep-mode behavior
 
 ## Follow-up Optimizations
-- [ ] Implement true `--diff-only` fast path (summarize changed files only)
-- [ ] Add manifest retention policy / pruning options
+- [x] Implement true `--diff-only` fast path (summarize changed files only)
+- [x] Add manifest retention policy / pruning options

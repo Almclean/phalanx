@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from parser import parse_file
+from parser import discover_files, parse_file
 
 
 def _now_iso() -> str:
@@ -76,6 +76,15 @@ class ManifestDiff:
     churn_hotspots: list[str]
 
 
+@dataclass
+class RepoChangeSet:
+    added: list[str]
+    modified: list[str]
+    deleted: list[str]
+    unchanged: list[str]
+    current_hashes: dict[str, str]
+
+
 class ManifestStore:
     def __init__(self, manifest_dir: Optional[Path] = None):
         if manifest_dir is None:
@@ -120,19 +129,39 @@ class ManifestStore:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def find_all(self, repo_path: str | Path, limit: int = 10) -> list[RunManifest]:
+    def _find_all_with_paths(
+        self,
+        repo_path: str | Path,
+        limit: int = 10,
+    ) -> list[tuple[RunManifest, Path]]:
         target = str(Path(repo_path).resolve())
-        manifests: list[RunManifest] = []
+        manifests: list[tuple[RunManifest, Path]] = []
         for p in self.manifest_dir.glob("*.json"):
             m = self.load(p)
             if m is None:
                 continue
             if str(Path(m.repo_path).resolve()) != target:
                 continue
-            manifests.append(m)
+            manifests.append((m, p))
 
-        manifests.sort(key=lambda m: m.timestamp, reverse=True)
+        manifests.sort(key=lambda item: item[0].timestamp, reverse=True)
         return manifests[:limit]
+
+    def find_all(self, repo_path: str | Path, limit: int = 10) -> list[RunManifest]:
+        return [m for m, _ in self._find_all_with_paths(repo_path, limit=limit)]
+
+    def prune(self, repo_path: str | Path, keep: int) -> list[Path]:
+        keep = max(1, keep)
+        manifests_with_paths = self._find_all_with_paths(repo_path, limit=10_000)
+        to_delete = manifests_with_paths[keep:]
+        deleted: list[Path] = []
+        for _, p in to_delete:
+            try:
+                p.unlink()
+                deleted.append(p)
+            except OSError:
+                continue
+        return deleted
 
     def find_latest(self, repo_path: str | Path, run_id_prefix: str | None = None) -> Optional[RunManifest]:
         all_for_repo = self.find_all(repo_path, limit=200)
@@ -199,6 +228,44 @@ class ManifestStore:
 def new_run_id(repo_path: str | Path) -> str:
     seed = f"{Path(repo_path).resolve()}|{_now_iso()}"
     return _sha256_text(seed)[:16]
+
+
+def compute_repo_changes(
+    *,
+    repo_path: Path,
+    previous_manifest: RunManifest,
+    extra_excludes: set[str] | None = None,
+) -> RepoChangeSet:
+    current_files = discover_files(repo_path, extra_excludes)
+    current_hashes: dict[str, str] = {}
+    for path in current_files:
+        try:
+            current_hashes[str(path.resolve())] = _sha256_bytes(path.read_bytes())
+        except OSError:
+            continue
+
+    old_files = previous_manifest.files
+    current_paths = set(current_hashes.keys())
+    old_paths = set(old_files.keys())
+
+    added = sorted(current_paths - old_paths)
+    deleted = sorted(old_paths - current_paths)
+    modified: list[str] = []
+    unchanged: list[str] = []
+
+    for path in sorted(current_paths & old_paths):
+        if old_files[path].content_hash == current_hashes[path]:
+            unchanged.append(path)
+        else:
+            modified.append(path)
+
+    return RepoChangeSet(
+        added=added,
+        modified=modified,
+        deleted=deleted,
+        unchanged=unchanged,
+        current_hashes=current_hashes,
+    )
 
 
 def build_run_manifest(

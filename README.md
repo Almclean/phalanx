@@ -85,8 +85,11 @@ uv run phalanx /path/to/your/repo --checkpoint-dir ~/.repo_summarizer_cache/chec
 # Diff output (manifest-based)
 uv run phalanx /path/to/your/repo --diff --diff-output run_diff.json
 
-# Diff-only output mode
+# Diff-only fast path (changed files only)
 uv run phalanx /path/to/your/repo --diff-only --diff-digest
+
+# Keep only the last 20 manifests for this repo
+uv run phalanx /path/to/your/repo --keep-manifests 20
 ```
 
 ## Cost Estimates
@@ -118,8 +121,10 @@ The tool generates:
 
 - Every non-dry run writes a manifest to `~/.repo_summarizer_cache/manifests` (or `--manifest-dir`).
 - On subsequent runs, `--diff` compares current manifest to the previous run (or `--since <run_id_prefix>`).
+- `--diff-only` uses a fast path that summarizes only added/modified source files.
 - Diff JSON includes added/deleted/modified/unchanged counts and churn hotspots.
 - `--diff-digest` adds a manager-oriented prose digest from the diff context.
+- `--keep-manifests N` prunes older manifests after each run.
 
 ## Files
 

@@ -2,10 +2,10 @@ from pathlib import Path
 
 from manifest import (
     FileRecord,
-    ManifestDiff,
     ManifestStore,
     RunManifest,
     build_run_manifest,
+    compute_repo_changes,
 )
 
 
@@ -102,3 +102,84 @@ def test_churn_hotspots_detect_three_of_last_five():
     ]
     hotspots = ManifestStore.compute_churn_hotspots(manifests, min_hits=3, window=5)
     assert hotspots == ["src/core.py"]
+
+
+def test_compute_repo_changes_added_modified_deleted(tmp_path: Path):
+    repo = tmp_path / "repo_changes"
+    repo.mkdir()
+    a = repo / "a.py"
+    b = repo / "b.py"
+    a.write_text("def a():\n    return 1\n")
+    b.write_text("def b():\n    return 2\n")
+
+    old_manifest = build_run_manifest(
+        repo_path=repo,
+        repo_url=None,
+        run_id="old",
+        duration_secs=0.1,
+        api_cost_usd=0.0,
+        final_summary="old",
+        file_summaries={str(a.resolve()): "A", str(b.resolve()): "B"},
+    )
+
+    # mutate filesystem: modify b, delete a, add c
+    a.unlink()
+    b.write_text("def b():\n    return 22\n")
+    c = repo / "c.py"
+    c.write_text("def c():\n    return 3\n")
+
+    changes = compute_repo_changes(repo_path=repo, previous_manifest=old_manifest)
+    assert changes.added == [str(c.resolve())]
+    assert changes.deleted == [str(a.resolve())]
+    assert changes.modified == [str(b.resolve())]
+    assert changes.unchanged == []
+
+
+def test_manifest_prune_keeps_latest_n(tmp_path: Path):
+    repo = tmp_path / "repo_prune"
+    repo.mkdir()
+    f = repo / "x.py"
+    f.write_text("def x():\n    return 1\n")
+
+    store = ManifestStore(tmp_path / "manifests")
+    m1 = build_run_manifest(
+        repo_path=repo,
+        repo_url=None,
+        run_id="run1",
+        duration_secs=0.1,
+        api_cost_usd=0.0,
+        final_summary="s1",
+        file_summaries={str(f.resolve()): "sum1"},
+    )
+    m1.timestamp = "2026-02-22T10:00:00Z"
+    m2 = build_run_manifest(
+        repo_path=repo,
+        repo_url=None,
+        run_id="run2",
+        duration_secs=0.1,
+        api_cost_usd=0.0,
+        final_summary="s2",
+        file_summaries={str(f.resolve()): "sum2"},
+    )
+    m2.timestamp = "2026-02-22T11:00:00Z"
+    m3 = build_run_manifest(
+        repo_path=repo,
+        repo_url=None,
+        run_id="run3",
+        duration_secs=0.1,
+        api_cost_usd=0.0,
+        final_summary="s3",
+        file_summaries={str(f.resolve()): "sum3"},
+    )
+    m3.timestamp = "2026-02-22T12:00:00Z"
+
+    store.save(m1)
+    store.save(m2)
+    store.save(m3)
+
+    removed = store.prune(repo, keep=2)
+    assert len(removed) == 1
+
+    remaining = store.find_all(repo, limit=10)
+    assert len(remaining) == 2
+    assert [m.run_id for m in remaining] == ["run3", "run2"]

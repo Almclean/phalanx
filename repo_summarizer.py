@@ -47,8 +47,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from github import is_github_url, clone_repo, CloneError
 from orchestrator import RepoOrchestrator
-from manifest import ManifestStore, build_run_manifest, new_run_id
+from manifest import ManifestStore, build_run_manifest, new_run_id, compute_repo_changes
 from diff_report import manifest_diff_to_dict, write_diff_json, generate_diff_digest
+from parser import parse_file
 
 
 def build_markdown_report(result) -> str:
@@ -108,6 +109,29 @@ def build_markdown_report(result) -> str:
     ]
 
     return "\n".join(lines)
+
+
+async def summarize_changed_files(orchestrator: RepoOrchestrator, changed_paths: list[str]) -> dict[str, str]:
+    file_units = []
+    for path in changed_paths:
+        fu = parse_file(Path(path))
+        if fu is not None:
+            file_units.append(fu)
+    if not file_units:
+        return {}
+
+    tasks = {fu.path: orchestrator.summarizer.summarize_file(fu) for fu in file_units}
+    results = await asyncio.gather(*tasks.values())
+    return dict(zip(tasks.keys(), results))
+
+
+def build_diff_only_summary(previous_summary: str, *, added: int, modified: int, deleted: int) -> str:
+    return (
+        "Diff-only manifest update.\n\n"
+        f"Changed files since previous run: +{added} added, {modified} modified, -{deleted} deleted.\n\n"
+        "Previous repository summary context:\n"
+        f"{previous_summary[:2000]}"
+    )
 
 
 async def main():
@@ -182,11 +206,13 @@ async def main():
     parser.add_argument("--no-diff-digest", dest="diff_digest", action="store_false",
                         help="Disable prose digest generation")
     parser.add_argument("--diff-only", action="store_true",
-                        help="Output only diff report content (still runs analysis)")
+                        help="Fast path: summarize changed files only and output diff report content")
     parser.add_argument("--since", default=None,
                         help="Diff against a specific prior run_id prefix")
     parser.add_argument("--manifest-dir", type=Path, default=None,
                         help="Manifest directory for run history and diffing")
+    parser.add_argument("--keep-manifests", type=int, default=None,
+                        help="Keep only the most recent N manifests per repo")
 
     args = parser.parse_args()
 
@@ -259,6 +285,126 @@ async def main():
         checkpoint_dir=args.checkpoint_dir,
         resume=args.resume,
     )
+    manifest_store = ManifestStore(args.manifest_dir) if (args.diff and not args.dry_run) else None
+    diff_payload = None
+    diff_digest_text = None
+    diff_output_path = None
+
+    if args.diff_only:
+        if manifest_store is None:
+            print("Error: --diff-only requires --diff (and cannot be used with --dry-run).", file=sys.stderr)
+            if tmp_dir is not None:
+                tmp_dir.cleanup()
+            sys.exit(1)
+
+        previous_manifest = manifest_store.find_latest(repo_path, run_id_prefix=args.since)
+        if previous_manifest is None:
+            output_text = "No previous manifest found; cannot run --diff-only yet."
+            elapsed = time.time() - start
+            print(f"\n✅ Complete in {elapsed:.1f}s\n", flush=True)
+            if args.output:
+                args.output.write_text(output_text)
+                print(f"📄 Report written to: {args.output}")
+            else:
+                print("\n" + "=" * 80)
+                print(output_text)
+            if tmp_dir is not None:
+                tmp_dir.cleanup()
+            return
+
+        changes = compute_repo_changes(
+            repo_path=repo_path.resolve(),
+            previous_manifest=previous_manifest,
+            extra_excludes=extra_excludes,
+        )
+        changed_paths = sorted(changes.added + changes.modified)
+        changed_summaries = await summarize_changed_files(orchestrator, changed_paths)
+
+        merged_file_summaries: dict[str, str] = {}
+        for path in sorted(changes.current_hashes.keys()):
+            if path in changed_summaries:
+                merged_file_summaries[path] = changed_summaries[path]
+            elif path in previous_manifest.files:
+                merged_file_summaries[path] = previous_manifest.files[path].summary
+
+        elapsed = time.time() - start
+        current_manifest = build_run_manifest(
+            repo_path=repo_path,
+            repo_url=repo_url,
+            run_id=new_run_id(repo_path),
+            duration_secs=elapsed,
+            api_cost_usd=orchestrator.summarizer.tracker.estimate_usd(),
+            final_summary=build_diff_only_summary(
+                previous_manifest.final_summary,
+                added=len(changes.added),
+                modified=len(changes.modified),
+                deleted=len(changes.deleted),
+            ),
+            file_summaries=merged_file_summaries,
+        )
+        manifest_path = manifest_store.save(current_manifest)
+        if args.verbose:
+            print(f"🗂️  Manifest written to: {manifest_path}")
+        if args.keep_manifests is not None:
+            pruned = manifest_store.prune(repo_path, keep=args.keep_manifests)
+            if args.verbose and pruned:
+                print(f"🧹 Pruned {len(pruned)} old manifests")
+
+        diff_obj = manifest_store.diff(previous_manifest, current_manifest)
+        history = manifest_store.find_all(repo_path, limit=5)
+        diff_obj.churn_hotspots = manifest_store.compute_churn_hotspots(history)
+        diff_payload = manifest_diff_to_dict(
+            diff_obj,
+            old_run_id=previous_manifest.run_id,
+            new_run_id=current_manifest.run_id,
+        )
+
+        if args.diff_output is not None:
+            diff_output_path = args.diff_output
+        elif args.output is not None:
+            diff_output_path = args.output.with_name(f"{args.output.stem}_diff.json")
+        else:
+            diff_output_path = Path(f"{repo_path.resolve().name}_diff.json")
+        write_diff_json(diff_output_path, diff_payload)
+        print(f"📎 Diff JSON written to: {diff_output_path}")
+
+        if args.diff_digest:
+            diff_digest_text = await generate_diff_digest(
+                summarizer=orchestrator.summarizer,
+                diff=diff_obj,
+                old_manifest=previous_manifest,
+                new_manifest=current_manifest,
+            )
+
+        print(f"\n✅ Complete in {elapsed:.1f}s\n", flush=True)
+        if diff_digest_text:
+            output_text = diff_digest_text
+        else:
+            output_text = json.dumps(diff_payload, indent=2)
+
+        if args.output:
+            args.output.write_text(output_text)
+            print(f"📄 Report written to: {args.output}")
+        else:
+            print("\n" + "=" * 80)
+            print(output_text)
+
+        if args.json_output:
+            json_data = {
+                "repo_name": display_repo_name,
+                "mode": "diff_only",
+                "diff": diff_payload,
+                "diff_digest": diff_digest_text,
+                "changed_files_summarized": len(changed_summaries),
+                "stats": vars(orchestrator.summarizer.tracker),
+            }
+            args.json_output.write_text(json.dumps(json_data, indent=2))
+            print(f"📊 JSON report written to: {args.json_output}")
+
+        print(f"\n💰 {orchestrator.summarizer.tracker.report()}")
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+        return
 
     try:
         result = await orchestrator.run(repo_path)
@@ -271,12 +417,7 @@ async def main():
     elapsed = time.time() - start
     print(f"\n✅ Complete in {elapsed:.1f}s\n", flush=True)
 
-    diff_payload = None
-    diff_digest_text = None
-    diff_output_path = None
-
-    if args.diff and not args.dry_run:
-        manifest_store = ManifestStore(args.manifest_dir)
+    if manifest_store is not None:
         previous_manifest = manifest_store.find_latest(repo_path, run_id_prefix=args.since)
 
         current_manifest = build_run_manifest(
@@ -291,6 +432,10 @@ async def main():
         manifest_path = manifest_store.save(current_manifest)
         if args.verbose:
             print(f"🗂️  Manifest written to: {manifest_path}")
+        if args.keep_manifests is not None:
+            pruned = manifest_store.prune(repo_path, keep=args.keep_manifests)
+            if args.verbose and pruned:
+                print(f"🧹 Pruned {len(pruned)} old manifests")
 
         if previous_manifest is not None:
             diff_obj = manifest_store.diff(previous_manifest, current_manifest)
